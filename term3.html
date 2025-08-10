@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Linux Terminal Simulator - Mouse, Highlight, Editor, Tabs</title>
+<style>
+  body {
+    background-color: #000;
+    color: #33ff33;
+    font-family: monospace;
+    margin: 0; padding: 0;
+    height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  #tabs {
+    display: flex;
+    background: #111;
+    border-bottom: 1px solid #33ff33;
+  }
+  #tabs button {
+    background: #222;
+    border: none;
+    border-right: 1px solid #33ff33;
+    color: #33ff33;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+  }
+  #tabs button.active {
+    background: #33ff33;
+    color: #000;
+    font-weight: bold;
+  }
+  #terminal-container {
+    flex: 1;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+  .terminal {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    white-space: pre-wrap;
+  }
+  .input-line {
+    display: flex;
+    padding: 10px;
+    background: #111;
+  }
+  .prompt {
+    user-select: none;
+    white-space: nowrap;
+  }
+  .cmdline {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: #33ff33;
+    font-family: monospace;
+    font-size: 1em;
+    caret-color: #33ff33;
+    outline: none;
+  }
+  /* Syntax highlighting */
+  .cmd {
+    color: #66ccff;
+    font-weight: bold;
+  }
+  .param {
+    color: #ffff66;
+  }
+  .string {
+    color: #ff9966;
+  }
+  .error {
+    color: #ff3333;
+    font-weight: bold;
+  }
+  .dir {
+    color: #66ccff;
+    font-weight: bold;
+  }
+  /* Basic modal for editor */
+  #editor-modal {
+    position: fixed;
+    top: 10%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #111;
+    border: 2px solid #33ff33;
+    padding: 20px;
+    width: 80%;
+    max-width: 600px;
+    height: 400px;
+    display: none;
+    flex-direction: column;
+    z-index: 1000;
+  }
+  #editor-modal textarea {
+    flex: 1;
+    width: 100%;
+    background: black;
+    color: #33ff33;
+    border: none;
+    font-family: monospace;
+    font-size: 1em;
+    resize: none;
+    padding: 10px;
+  }
+  #editor-modal .buttons {
+    margin-top: 10px;
+    text-align: right;
+  }
+  #editor-modal button {
+    padding: 6px 12px;
+    background: #33ff33;
+    color: black;
+    border: none;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="tabs"></div>
+
+<div id="terminal-container"></div>
+
+<div id="editor-modal" role="dialog" aria-modal="true" aria-labelledby="editor-title">
+  <h3 id="editor-title" style="color:#33ff33;">File Editor</h3>
+  <textarea id="editor-textarea" aria-label="File content editor"></textarea>
+  <div class="buttons">
+    <button id="save-file-btn">Save</button>
+    <button id="close-editor-btn">Close</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  // Terminal state for multiple tabs
+  let tabs = [];
+  let currentTabIndex = 0;
+
+  const commandsBasic = ['help','ls','cd','pwd','cat','whoami','history','uname','clear','mkdir','touch','rm','echo','alias','unalias','nano'];
+
+  const container = document.getElementById('terminal-container');
+  const tabsDiv = document.getElementById('tabs');
+  const editorModal = document.getElementById('editor-modal');
+  const editorTextarea = document.getElementById('editor-textarea');
+  const saveFileBtn = document.getElementById('save-file-btn');
+  const closeEditorBtn = document.getElementById('close-editor-btn');
+
+  // Create a new tab with its own state
+  function createNewTab(name = `Terminal ${tabs.length + 1}`) {
+    const termDiv = document.createElement('div');
+    termDiv.classList.add('terminal');
+    termDiv.style.display = 'none';
+
+    const inputLineDiv = document.createElement('div');
+    inputLineDiv.className = 'input-line';
+
+    const promptSpan = document.createElement('span');
+    promptSpan.className = 'prompt';
+    promptSpan.textContent = 'user@simulator:~$ ';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'cmdline';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+
+    inputLineDiv.appendChild(promptSpan);
+    inputLineDiv.appendChild(input);
+
+    container.appendChild(termDiv);
+    container.appendChild(inputLineDiv);
+
+    // Terminal state
+    const tabState = {
+      name,
+      termDiv,
+      inputLineDiv,
+      promptSpan,
+      input,
+      filesystem: JSON.parse(JSON.stringify({
+        'home': {
+          'user': {
+            'readme.txt': 'This is a Linux terminal simulator with advanced features.\nEnjoy! :)\n',
+            'notes.txt': 'Remember to practice commands daily!',
+            'todo.txt': '1. Learn bash\n2. Improve JS\n3. Build a shell',
+            'hello world.txt': 'Hello, World!\nWelcome to the simulator.'
+          }
+        },
+        'Desktop': {}, 'Documents': {}, 'Downloads': {}, 'Music': {}, 'Pictures': {}, 'Public': {}, 'Templates': {}, 'Videos': {}
+      })),
+      currentDir: ['home','user'],
+      history: [],
+      historyIndex: 0,
+      aliases: {}
+    };
+
+    // Attach input listeners
+    input.addEventListener('keydown', (e) => handleInputKeyDown(e, tabState));
+    input.addEventListener('click', (e) => {
+      // Example mouse support: selecting text in terminal, clicking output (future feature)
+      // For now, just focus
+      input.focus();
+    });
+
+    return tabState;
+  }
+
+  // Initialize with one tab
+  function init() {
+    let tab = createNewTab();
+    tabs.push(tab);
+    createTabButton(tab);
+    switchTab(0);
+  }
+
+  // Create button for tab switching
+  function createTabButton(tab) {
+    const btn = document.createElement('button');
+    btn.textContent = tab.name;
+    btn.addEventListener('click', () => {
+      const idx = tabs.findIndex(t => t === tab);
+      switchTab(idx);
+    });
+    tabsDiv.appendChild(btn);
+    tab.button = btn;
+  }
+
+  // Switch visible tab
+  function switchTab(index) {
+    if (index === currentTabIndex) return;
+    if (tabs[currentTabIndex]) {
+      tabs[currentTabIndex].termDiv.style.display = 'none';
+      tabs[currentTabIndex].inputLineDiv.style.display = 'none';
+      tabs[currentTabIndex].button.classList.remove('active');
+    }
+    currentTabIndex = index;
+    tabs[currentTabIndex].termDiv.style.display = 'block';
+    tabs[currentTabIndex].inputLineDiv.style.display = 'flex';
+    tabs[currentTabIndex].button.classList.add('active');
+    // Focus input
+    tabs[currentTabIndex].input.focus();
+    updatePrompt(tabs[currentTabIndex]);
+  }
+
+  // Update prompt to show current directory (with ~ shorthand)
+  function updatePrompt(tab) {
+    const home = ['home','user'];
+    let path = tab.currentDir;
+    if (path.length >= home.length && JSON.stringify(path.slice(0, home.length)) === JSON.stringify(home)) {
+      const rest = path.slice(home.length);
+      tab.promptSpan.textContent = `user@simulator:~${rest.length ? '/' + rest.join('/') : ''}$ `;
+    } else {
+      tab.promptSpan.textContent = `user@simulator:/${path.join('/')}$ `;
+    }
+  }
+
+  // Handle input with autocomplete, history, command processing, syntax highlight output
+  function handleInputKeyDown(e, tab) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const inputValue = tab.input.value.trim();
+      if (inputValue.length === 0) return;
+      runCommand(inputValue, tab);
+      tab.history.push(inputValue);
+      tab.historyIndex = tab.history.length;
+      tab.input.value = '';
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (tab.history.length === 0) return;
+      if (tab.historyIndex > 0) tab.historyIndex--;
+      tab.input.value = tab.history[tab.historyIndex] || '';
+      setCursorEnd(tab.input);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (tab.history.length === 0) return;
+      if (tab.historyIndex < tab.history.length -1) tab.historyIndex++;
+      else {
+        tab.historyIndex = tab.history.length;
+        tab.input.value = '';
+        return;
+      }
+      tab.input.value = tab.history[tab.historyIndex] || '';
+      setCursorEnd(tab.input);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      autocompleteCommand(tab);
+    }
+  }
+
+  // Utility for setting cursor at end
+  function setCursorEnd(input) {
+    setTimeout(() => {
+      input.selectionStart = input.selectionEnd = input.value.length;
+    }, 0);
+  }
+
+  // Autocomplete implementation (commands only for brevity)
+  function autocompleteCommand(tab) {
+    const input = tab.input.value;
+    const parts = input.split(/\s+/);
+    const cmdPart = parts[0];
+    let matches = commandsBasic.filter(c => c.startsWith(cmdPart));
+    if (matches.length === 1) {
+      tab.input.value = matches[0] + ' ';
+      setCursorEnd(tab.input);
+    } else if (matches.length > 1) {
+      printOutput(matches.join('   '), tab);
+    }
+  }
+
+  // Print output with simple syntax highlight for commands (color command names, params)
+  function printOutput(text, tab, isError = false) {
+    const line = document.createElement('div');
+    if (isError) line.classList.add('error');
+    // Simple syntax highlight: if text starts with prompt, highlight command part
+    if(text.startsWith('user@simulator:')) {
+      let parts = text.split(' ');
+      let promptPart = parts.shift() + ' ';
+      let cmd = parts.shift() || '';
+      let rest = parts.join(' ');
+      line.innerHTML = `<span class="prompt">${escapeHTML(promptPart)}</span><span class="cmd">${escapeHTML(cmd)}</span> <span class="param">${escapeHTML(rest)}</span>`;
+    } else {
+      line.textContent = text;
+    }
+    tab.termDiv.appendChild(line);
+    tab.termDiv.scrollTop = tab.termDiv.scrollHeight;
+  }
+
+  function escapeHTML(text) {
+    const p = document.createElement('p');
+    p.textContent = text;
+    return p.innerHTML;
+  }
+
+  // Resolve Path utility
+  function resolvePath(fs, currentDir, input) {
+    if (!input) return currentDir.slice();
+
+    let result = [];
+    if (input.startsWith('/')) {
+      result = input.slice(1).split('/').filter(Boolean);
+    } else {
+      result = currentDir.slice();
+      const parts = input.split('/').filter(Boolean);
+      for (let part of parts) {
+        if (part === '.') continue;
+        else if (part === '..') {
+          if (result.length > 0) result.pop();
+        } else {
+          result.push(part);
+        }
+      }
+    }
+    return result;
+  }
+
+  function isDirectory(node) {
+    return node && typeof node === 'object';
+  }
+
+  // Filesystem read/write helpers
+  function getNode(fs, path) {
+    let node = fs;
+    for (const p of path) {
+      if (!node || !node.hasOwnProperty(p)) return null;
+      node = node[p];
+    }
+    return node;
+  }
+
+  function setNode(fs, path, value) {
+    let node = fs;
+    for (let i=0; i < path.length - 1; i++) {
+      if (!node[path[i]]) node[path[i]] = {};
+      node = node[path[i]];
+    }
+    node[path[path.length - 1]] = value;
+  }
+
+  // Run command implementations
+  function runCommand(input, tab) {
+    printOutput(`user@simulator:${formatPath(tab.currentDir)}$ ${input}`, tab);
+    let parts = input.trim().split(/\s+/);
+    let cmd = parts[0];
+    let args = parts.slice(1);
+
+    // Alias substitution
+    if (tab.aliases[cmd]) {
+      const aliased = tab.aliases[cmd].split(/\s+/);
+      cmd = aliased[0];
+      args = aliased.slice(1).concat(args);
+    }
+
+    switch (cmd) {
+      case 'help':
+        printOutput(commandsBasic.map(c => c).join('  '), tab);
+        break;
+      case 'ls': {
+        let path = args[0] ? resolvePath(tab.filesystem, tab.currentDir, args[0]) : tab.currentDir;
+        let node = getNode(tab.filesystem, path);
+        if (!node) {
+          printOutput(`ls: cannot access '${args[0]}': No such file or directory`, tab, true);
+          break;
+        }
+        if (!isDirectory(node)) {
+          printOutput(args[0] || '.', tab);
+          break;
+        }
+        let dirs = [], files = [];
+        for (const k in node) {
+          if (isDirectory(node[k])) dirs.push(k);
+          else files.push(k);
+        }
+        dirs.sort(); files.sort();
+        printOutput(dirs.map(d => `%DIR%${d}%END%`).join('  ') + '  ' + files.join('  '), tab);
+        // Replace placeholders with styled spans
+        let lastChild = tab.termDiv.lastChild;
+        lastChild.innerHTML = lastChild.innerHTML.replace(/%DIR%(.*?)%END%/g, (_, d) => `<span class="dir">${escapeHTML(d)}</span>`);
+        break;
+      }
+      case 'pwd':
+        printOutput(formatPath(tab.currentDir), tab);
+        break;
+      case 'cd': {
+        let target = args[0] ? resolvePath(tab.filesystem, tab.currentDir, args[0]) : ['home','user'];
+        let node = getNode(tab.filesystem, target);
+        if (!node) printOutput(`cd: ${args[0]}: No such file or directory`, tab, true);
+        else if (!isDirectory(node)) printOutput(`cd: ${args[0]}: Not a directory`, tab, true);
+        else {
+          tab.currentDir = target;
+          updatePrompt(tab);
+        }
+        break;
+      }
+      case 'cat': {
+        if(args.length === 0) {
+          printOutput('cat: missing filename', tab, true);
+          break;
+        }
+        let filePath = resolvePath(tab.filesystem, tab.currentDir, args.join(' '));
+        let base = filePath.slice(0, -1);
+        let fileName = filePath[filePath.length -1];
+        let dirNode = getNode(tab.filesystem, base);
+        if (!dirNode || !dirNode.hasOwnProperty(fileName) || isDirectory(dirNode[fileName])) {
+          printOutput(`cat: ${args.join(' ')}: No such file or directory`, tab, true);
+        } else {
+          printOutput(dirNode[fileName], tab);
+        }
+        break;
+      }
+      case 'echo':
+        printOutput(args.join(' '), tab);
+        break;
+      case 'clear':
+        tab.termDiv.innerHTML = '';
+        break;
+      case 'whoami':
+        printOutput('user', tab);
+        break;
+      case 'history':
+        if(tab.history.length === 0) printOutput('No commands in history.', tab);
+        else printOutput(tab.history.map((c,i) => `${i+1}  ${c}`).join('\n'), tab);
+        break;
+      case 'uname':
+        printOutput('Linux Simulator Enhanced 3.0', tab);
+        break;
+      case 'mkdir': {
+        if(args.length === 0) {
+          printOutput('mkdir: missing operand', tab, true);
+          break;
+        }
+        let path = resolvePath(tab.filesystem, tab.currentDir, args[0]);
+        let parent = getNode(tab.filesystem, path.slice(0, -1));
+        let newDir = path[path.length -1];
+        if (!parent || !isDirectory(parent)) {
+          printOutput(`mkdir: cannot create directory '${args[0]}': No such file or directory`, tab, true);
+          break;
+        }
+        if(parent[newDir]) {
+          printOutput(`mkdir: cannot create directory '${args[0]}': File exists`, tab, true);
+          break;
+        }
+        parent[newDir] = {};
+        break;
+      }
+      case 'touch': {
+        if(args.length === 0) {
+          printOutput('touch: missing file operand', tab, true);
+          break;
+        }
+        let path = resolvePath(tab.filesystem, tab.currentDir, args.join(' '));
+        let parent = getNode(tab.filesystem, path.slice(0,-1));
+        let fileName = path[path.length - 1];
+        if(!parent || !isDirectory(parent)) {
+          printOutput(`touch: cannot touch '${args.join(' ')}': No such file or directory`, tab, true);
+          break;
+        }
+        if(!parent[fileName]) parent[fileName] = '';
+        break;
+      }
+      case 'rm': {
+        if(args.length === 0) {
+          printOutput('rm: missing operand', tab, true);
+          break;
+        }
+        let path = resolvePath(tab.filesystem, tab.currentDir, args.join(' '));
+        let parent = getNode(tab.filesystem, path.slice(0,-1));
+        let name = path[path.length - 1];
+        if(!parent || !parent.hasOwnProperty(name)) {
+          printOutput(`rm: cannot remove '${args.join(' ')}': No such file or directory`, tab, true);
+          break;
+        }
+        // Remove file or empty dir only
+        if(isDirectory(parent[name]) && Object.keys(parent[name]).length > 0) {
+          printOutput(`rm: cannot remove '${args.join(' ')}': Directory not empty`, tab, true);
+          break;
+        }
+        delete parent[name];
+        break;
+      }
+      case 'alias': {
+        if(args.length === 0) {
+          if(Object.keys(tab.aliases).length === 0) printOutput('No aliases defined.', tab);
+          else printOutput(Object.entries(tab.aliases).map(([k,v]) => `${k}='${v}'`).join('\n'), tab);
+          break;
+        }
+        let ali = args.join(' ');
+        let match = ali.match(/^(\w+)=(['"]?)(.*?)\2$/);
+        if(!match) {
+          printOutput('alias: Invalid alias format. Usage: alias name=\'value\'', tab, true);
+          break;
+        }
+        tab.aliases[match[1]] = match[3];
+        printOutput(`alias ${match[1]}='${match[3]}'`, tab);
+        break;
+      }
+      case 'unalias': {
+        if(args.length === 0) {
+          printOutput('unalias: usage: unalias name', tab, true);
+          break;
+        }
+        let name = args[0];
+        if(!tab.aliases[name]) {
+          printOutput(`unalias: ${name}: not found`, tab, true);
+          break;
+        }
+        delete tab.aliases[name];
+        break;
+      }
+      case 'nano': {
+        if(args.length === 0) {
+          printOutput('nano: missing filename', tab, true);
+          break;
+        }
+        openEditor(args.join(' '), tab);
+        break;
+      }
+      default:
+        printOutput(`bash: ${cmd}: command not found`, tab, true);
+    }
+  }
+
+  // Format path with ~ for home
+  function formatPath(path) {
+    const home = ['home','user'];
+    if(path.length >= home.length && JSON.stringify(path.slice(0,home.length)) === JSON.stringify(home)) {
+      let rest = path.slice(home.length);
+      return '~' + (rest.length ? '/' + rest.join('/') : '');
+    }
+    return '/' + path.join('/');
+  }
+
+  // Open file editor modal
+  function openEditor(filename, tab) {
+    const path = resolvePath(tab.filesystem, tab.currentDir, filename);
+    const base = path.slice(0, -1);
+    const fileName = path[path.length - 1];
+    const dirNode = getNode(tab.filesystem, base);
+    if (!dirNode || !dirNode.hasOwnProperty(fileName) || isDirectory(dirNode[fileName])) {
+      printOutput(`nano: ${filename}: No such file`, tab, true);
+      return;
+    }
+
+    editorModal.style.display = 'flex';
+    editorTextarea.value = dirNode[fileName];
+    editorTextarea.focus();
+
+    // Save handler
+    function saveHandler() {
+      dirNode[fileName] = editorTextarea.value;
+      printOutput(`Saved file ${filename}`, tab);
+      closeEditor();
+    }
+
+    // Close editor function
+    function closeEditor() {
+      editorModal.style.display = 'none';
+      saveFileBtn.removeEventListener('click', saveHandler);
+      closeEditorBtn.removeEventListener('click', closeEditor);
+      tabs[currentTabIndex].input.focus();
+    }
+
+    saveFileBtn.addEventListener('click', saveHandler);
+    closeEditorBtn.addEventListener('click', closeEditor);
+  }
+
+  // Initialize app
+  init();
+
+  // Add new tab button dynamically for demonstration
+  const newTabBtn = document.createElement('button');
+  newTabBtn.textContent = '+';
+  newTabBtn.title = 'New Tab';
+  newTabBtn.style.userSelect = 'none';
+  newTabBtn.style.color = '#33ff33';
+  newTabBtn.style.background = 'transparent';
+  newTabBtn.style.border = 'none';
+  newTabBtn.style.cursor = 'pointer';
+  newTabBtn.style.fontSize = '1.2em';
+  newTabBtn.style.padding = '8px 12px';
+  newTabBtn.addEventListener('click', () => {
+    let tab = createNewTab();
+    tabs.push(tab);
+    createTabButton(tab);
+    switchTab(tabs.length - 1);
+  });
+  tabsDiv.appendChild(newTabBtn);
+
+  // Focus first input on page load
+  tabs[0].input.focus();
+
+})();
+</script>
+
+</body>
+</html>
