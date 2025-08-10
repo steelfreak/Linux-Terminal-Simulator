@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Linux Terminal Simulator</title>
+<style>
+  body {
+    background-color: #000;
+    color: #33ff33;
+    font-family: monospace;
+    margin: 0;
+    padding: 20px;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #terminal {
+    height: 90vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+  #input-line {
+    display: flex;
+  }
+  #prompt {
+    user-select: none;
+  }
+  #cmdline {
+    background: transparent;
+    border: none;
+    color: #33ff33;
+    outline: none;
+    font-family: monospace;
+    flex: 1;
+    font-size: 1em;
+  }
+  ::selection {
+    background: #33ff33;
+    color: black;
+  }
+</style>
+</head>
+<body>
+
+<div id="terminal">
+  <div>Welcome to Linux Terminal Simulator! Type 'help' to see commands.</div>
+</div>
+
+<div id="input-line">
+  <span id="prompt">user@simulator:~$&nbsp;</span>
+  <input type="text" id="cmdline" autofocus autocomplete="off" />
+</div>
+
+<script>
+  const terminal = document.getElementById('terminal');
+  const cmdline = document.getElementById('cmdline');
+
+  const commands = {
+    help: () => {
+      return `Available commands:
+help    - Show this help message
+ls      - List directory contents
+pwd     - Print working directory
+echo    - Display a line of text
+date    - Show current date and time
+clear   - Clear the terminal screen`;
+    },
+    ls: () => {
+      // Simulated directory contents
+      return 'Desktop Documents Downloads Music Pictures Public Templates Videos';
+    },
+    pwd: () => {
+      return '/home/user';
+    },
+    echo: (args) => {
+      return args.join(' ');
+    },
+    date: () => {
+      return new Date().toString();
+    },
+    clear: () => {
+      terminal.innerHTML = '';
+      return '';
+    }
+  };
+
+  function printOutput(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    terminal.appendChild(div);
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  cmdline.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const input = cmdline.value.trim();
+      if (input.length === 0) return;
+      printOutput(`user@simulator:~$ ${input}`);
+
+      const [cmd, ...args] = input.split(/\s+/);
+      if (commands.hasOwnProperty(cmd)) {
+        const output = commands[cmd](args);
+        if (output) printOutput(output);
+      } else {
+        printOutput(`bash: ${cmd}: command not found`);
+      }
+      cmdline.value = '';
+    }
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Linux Terminal Simulator - Advanced</title>
+<style>
+  body {
+    background-color: #000;
+    color: #33ff33;
+    font-family: monospace;
+    margin: 0;
+    padding: 20px;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  #terminal {
+    flex: 1;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    padding-bottom: 10px;
+  }
+  #input-line {
+    display: flex;
+  }
+  #prompt {
+    user-select: none;
+    white-space: nowrap;
+  }
+  #cmdline {
+    background: transparent;
+    border: none;
+    color: #33ff33;
+    outline: none;
+    font-family: monospace;
+    flex: 1;
+    font-size: 1em;
+    caret-color: #33ff33;
+  }
+  ::selection {
+    background: #33ff33;
+    color: black;
+  }
+  /* Blinking cursor effect on input */
+  #cmdline {
+    animation: blink-caret 1s step-start infinite;
+  }
+  @keyframes blink-caret {
+    50% { border-right: 2px solid #33ff33; }
+    100% { border-right: none; }
+  }
+  .dir {
+    color: #66ccff;
+    font-weight: bold;
+  }
+  .alias-info {
+    color: #ffaa33;
+  }
+  .error {
+    color: #ff3333;
+  }
+</style>
+</head>
+<body>
+
+<div id="terminal"></div>
+
+<div id="input-line">
+  <span id="prompt">user@simulator:~$&nbsp;</span>
+  <input spellcheck="false" type="text" id="cmdline" autocomplete="off" autofocus />
+</div>
+
+<script>
+(() => {
+  const terminal = document.getElementById('terminal');
+  const cmdline = document.getElementById('cmdline');
+  const prompt = document.getElementById('prompt');
+
+  //////////////////////////////
+  // --- Persistent Storage ---
+  //////////////////////////////
+
+  // Keys to store in localStorage
+  const STORAGE_KEYS = {
+    FILESYSTEM: 'linuxsim-filesystem',
+    HISTORY: 'linuxsim-history',
+    HISTORY_INDEX: 'linuxsim-history-index',
+    OUTPUT: 'linuxsim-terminal-output',
+    CURRENT_DIR: 'linuxsim-current-dir',
+    ALIASES: 'linuxsim-aliases'
+  };
+
+  // Load and save filesystem
+  let filesystem = JSON.parse(localStorage.getItem(STORAGE_KEYS.FILESYSTEM)) || {
+    // root dir structure: keys are files or dirs
+    'home': {
+      'user': {
+        'readme.txt': 'This is a Linux terminal simulator with advanced features.\nEnjoy! :)\n',
+        'notes.txt': 'Remember to practice commands daily!',
+        'todo.txt': '1. Learn bash\n2. Improve JS\n3. Build a shell',
+        'hello world.txt': 'Hello, World!\nWelcome to the simulator.'
+      }
+    },
+    'Desktop': {},
+    'Documents': {},
+    'Downloads': {},
+    'Music': {},
+    'Pictures': {},
+    'Public': {},
+    'Templates': {},
+    'Videos': {}
+  };
+
+  // Save file system to localStorage
+  function saveFileSystem() {
+    localStorage.setItem(STORAGE_KEYS.FILESYSTEM, JSON.stringify(filesystem));
+  }
+
+  /////////////////////////////
+  // --- Current Directory ---
+  /////////////////////////////
+
+  // We'll use array of path segments, relative to root
+  // e.g. ['home', 'user']
+  let currentDir = JSON.parse(localStorage.getItem(STORAGE_KEYS.CURRENT_DIR)) || ['home', 'user'];
+
+  /////////////////////////////
+  // --- Command History -----
+  /////////////////////////////
+
+  let history = JSON.parse(localStorage.getItem(STORAGE_KEYS.HISTORY)) || [];
+  let historyIndex = parseInt(localStorage.getItem(STORAGE_KEYS.HISTORY_INDEX), 10);
+  if (isNaN(historyIndex) || historyIndex < 0) historyIndex = history.length;
+
+  /////////////////////////////
+  // --- Aliases -------------
+  /////////////////////////////
+
+  let aliases = JSON.parse(localStorage.getItem(STORAGE_KEYS.ALIASES)) || {};
+
+  /////////////////////////////
+  // --- Terminal output ------
+  /////////////////////////////
+
+  // Restore terminal output from localStorage
+  if (localStorage.getItem(STORAGE_KEYS.OUTPUT)) {
+    terminal.innerHTML = localStorage.getItem(STORAGE_KEYS.OUTPUT);
+    scrollTerminalBottom();
+  } else {
+    printOutput('Welcome to Linux Terminal Simulator with advanced features! Type \'help\' to see commands.');
+  }
+
+  /////////////////////////////
+  // --- Utility Functions ----
+  /////////////////////////////
+
+  // Scroll terminal view to bottom
+  function scrollTerminalBottom() {
+    terminal.scrollTop = terminal.scrollHeight;
+  }
+
+  // Utility: resolve a path array relative to filesystem root, return node or null
+  function resolvePath(pathArray) {
+    let node = filesystem;
+    for (const part of pathArray) {
+      if (typeof node !== 'object' || !node.hasOwnProperty(part)) {
+        return null;
+      }
+      node = node[part];
+    }
+    return node;
+  }
+
+  // Utility: turn relative or absolute path string to array of path parts relative to root
+  function resolvePathInput(inputPath) {
+    if (!inputPath) return currentDir.slice();
+
+    let result = [];
+    if (inputPath.startsWith('/')) {
+      // Absolute path, remove leading '/'
+      let parts = inputPath.slice(1).split('/').filter(Boolean);
+      result = parts;
+    } else {
+      // Relative path from currentDir
+      result = currentDir.slice();
+      let parts = inputPath.split('/').filter(Boolean);
+      for (let part of parts) {
+        if (part === '.') continue;
+        else if (part === '..') {
+          if (result.length > 0) result.pop();
+        } else {
+          result.push(part);
+        }
+      }
+    }
+    return result;
+  }
+
+  // Check if a node is a directory (object) or file (string)
+  function isDirectory(node) {
+    return node && typeof node === 'object';
+  }
+
+  // Format path array for prompt (use ~ for /home/user)
+  function formatPath(pathArr) {
+    let home = ['home', 'user'];
+    if (pathArr.length >= home.length &&
+       JSON.stringify(pathArr.slice(0, home.length)) === JSON.stringify(home)) {
+      let rest = pathArr.slice(home.length);
+      return '~' + (rest.length > 0 ? '/' + rest.join('/') : '');
+    }
+    return '/' + pathArr.join('/');
+  }
+
+  // Save all state to localStorage
+  function saveState() {
+    saveFileSystem();
+    localStorage.setItem(STORAGE_KEYS.CURRENT_DIR, JSON.stringify(currentDir));
+    localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(history));
+    localStorage.setItem(STORAGE_KEYS.HISTORY_INDEX, historyIndex.toString());
+    localStorage.setItem(STORAGE_KEYS.OUTPUT, terminal.innerHTML);
+    localStorage.setItem(STORAGE_KEYS.ALIASES, JSON.stringify(aliases));
+  }
+
+  ////////////////////////////////
+  // --- Command Implementations -
+  ////////////////////////////////
+
+  const commandList = {
+    help: {
+      description: 'Show this help message',
+      usage: 'help',
+      exec: () => {
+        const lines = Object.entries(commandList).map(([cmd, info]) => {
+          let padded = cmd.padEnd(10);
+          return `${padded} - ${info.description}`;
+        });
+        return lines.join('\n');
+      }
+    },
+    ls: {
+      description: 'List directory contents',
+      usage: 'ls [dir]',
+      exec: (args) => {
+        let targetPath = args[0] ? resolvePathInput(args[0]) : currentDir.slice();
+        let node = resolvePath(targetPath);
+        if (!node) return `ls: cannot access '${args[0]}': No such file or directory`;
+        if (!isDirectory(node)) return args[0] || '.' + ': Not a directory';
+
+        // Collect dirs and files separately
+        const dirs = [];
+        const files = [];
+
+        for (const key in node) {
+          if (isDirectory(node[key])) dirs.push(key);
+          else files.push(key);
+        }
+        // Sort alphabetically
+        dirs.sort();
+        files.sort();
+        // Directories in blue/bold
+        const dirStrs = dirs.map(d => `%DIR%${d}%END%`);
+        const fileStrs = files;
+        let output = dirStrs.concat(fileStrs).join('  ');
+        // replace placeholders with styled spans
+        output = output.replace(/%DIR%(.*?)%END%/g, (_, name) => {
+          return `<span class="dir">${name}</span>`;
+        });
+        return output || '';
+      }
+    },
+    pwd: {
+      description: 'Print working directory',
+      usage: 'pwd',
+      exec: () => {
+        return formatPath(currentDir);
+      }
+    },
+    echo: {
+      description: 'Display a line of text',
+      usage: 'echo [text]',
+      exec: (args) => {
+        return args.join(' ');
+      }
+    },
+    date: {
+      description: 'Show current date and time',
+      usage: 'date',
+      exec: () => {
+        return new Date().toString();
+      }
+    },
+    clear: {
+      description: 'Clear terminal screen',
+      usage: 'clear',
+      exec: () => {
+        terminal.innerHTML = '';
+        return '';
+      }
+    },
+    cat: {
+      description: 'Show file contents',
+      usage: 'cat filename',
+      exec: (args) => {
+        if (args.length === 0) return 'cat: missing filename';
+        const path = resolvePathInput(args.join(' '));
+        let base = path.slice(0, -1);
+        let filename = path[path.length - 1];
+        let dirNode = resolvePath(base);
+        if (!dirNode || !isDirectory(dirNode)) {
+          return `cat: ${args.join(' ')}: No such file or directory`;
+        }
+        if (!dirNode.hasOwnProperty(filename) || isDirectory(dirNode[filename])) {
+          return `cat: ${args.join(' ')}: No such file or directory`;
+        }
+        return dirNode[filename];
+      }
+    },
+    whoami: {
+      description: 'Show current user name',
+      usage: 'whoami',
+      exec: () => 'user'
+    },
+    history: {
+      description: 'Show command history',
+      usage: 'history',
+      exec: () => {
+        if (history.length === 0) return 'No commands in history.';
+        return history.map((cmd, i) => `${i+1}  ${cmd}`).join('\n');
+      }
+    },
+    uname: {
+      description: 'Show system information',
+      usage: 'uname',
+      exec: () => 'Linux Simulator 2.0'
+    },
+    cd: {
+      description: 'Change directory',
+      usage: 'cd [dir]',
+      exec: (args) => {
+        if (args.length === 0) {
+          currentDir = ['home', 'user'];
+          updatePrompt();
+          saveState();
+          return '';
+        }
+        let target = resolvePathInput(args.join(' '));
+        let node = resolvePath(target);
+        if (!node) return `cd: ${args.join(' ')}: No such file or directory`;
+        if (!isDirectory(node)) return `cd: ${args.join(' ')}: Not a directory`;
+        currentDir = target;
+        updatePrompt();
+        saveState();
+        return '';
+      }
+    },
+    mkdir: {
+      description: 'Make directory',
+      usage: 'mkdir dirname',
+      exec: (args) => {
+        if (args.length === 0) return 'mkdir: missing operand';
+        let targetPath = resolvePathInput(args[0]);
+        let dirNode = resolvePath(targetPath.slice(0, -1));
+        if (!dirNode || !isDirectory(dirNode)) return `mkdir: cannot create directory '${args[0]}': No such file or directory`;
+        let newDir = targetPath[targetPath.length - 1];
+        if (dirNode.hasOwnProperty(newDir)) return `mkdir: cannot create directory '${args[0]}': File exists`;
+        dirNode[newDir] = {};
+        saveFileSystem();
+        return '';
+      }
+    },
+    touch: {
+      description: 'Create empty file or update timestamp',
+      usage: 'touch filename',
+      exec: (args) => {
+        if (args.length === 0) return 'touch: missing file operand';
+        let targetPath = resolvePathInput(args.join(' '));
+        let dirNode = resolvePath(targetPath.slice(0, -1));
+        if (!dirNode || !isDirectory(dirNode)) return `touch: cannot touch '${args.join(' ')}': No such file or directory`;
+        let fileName = targetPath[targetPath.length - 1];
+        dirNode[fileName] = dirNode[fileName] || '';
+        saveFileSystem();
+        return '';
+      }
+    },
+    rm: {
+      description: 'Remove file or directory (only empty directories)',
+      usage: 'rm file_or_dir',
+      exec: (args) => {
+        if (args.length === 0) return 'rm: missing operand';
+        let targetPath = resolvePathInput(args.join(' '));
+        let dirNode = resolvePath(targetPath.slice(0, -1));
+        let name = targetPath[targetPath.length - 1];
+        if (!dirNode || !isDirectory(dirNode)) return `rm: cannot remove '${args.join(' ')}': No such file or directory`;
+        if (!dirNode.hasOwnProperty(name)) return `rm: cannot remove '${args.join(' ')}': No such file or directory`;
+        if (isDirectory(dirNode[name])) {
+          // Only empty directories can be removed for safety
+          if (Object.keys(dirNode[name]).length > 0) return `rm: cannot remove '${args.join(' ')}': Directory not empty`;
+          delete dirNode[name];
+        } else {
+          delete dirNode[name];
+        }
+        saveFileSystem();
+        return '';
+      }
+    },
+    alias: {
+      description: 'Define or list aliases',
+      usage: 'alias [name=\'value\']',
+      exec: (args) => {
+        if (args.length === 0) {
+          // list all aliases
+          if (Object.keys(aliases).length === 0) return 'No aliases defined.';
+          return Object.entries(aliases).map(([k,v]) => `${k}='${v}'`).join('\n');
+        }
+        // parse format: name='value' or name=value if quotes omitted
+        let input = args.join(' ');
+        let parts = input.match(/^(\w+)=['"]?(.*?)['"]?$/);
+        if (!parts) return 'alias: Invalid alias format. Usage: alias name=\'value\'';
+        const [_, name, value] = parts;
+        aliases[name] = value;
+        saveState();
+        return `alias ${name}='${value}'`;
+      }
+    },
+    unalias: {
+      description: 'Remove an alias',
+      usage: 'unalias name',
+      exec: (args) => {
+        if (args.length === 0) return 'unalias: usage: unalias name';
+        const name = args[0];
+        if (!aliases.hasOwnProperty(name)) return `unalias: ${name}: not found`;
+        delete aliases[name];
+        saveState();
+        return '';
+      }
+    }
+  };
+
+  // List of all commands for autocomplete
+  const allCommandNames = Object.keys(commandList);
+
+  /////////////////////////////////
+  // --- Update prompt display ---
+  /////////////////////////////////
+
+  function updatePrompt() {
+    prompt.innerHTML = `user@simulator:${formatPath(currentDir)}$&nbsp;`;
+  }
+  updatePrompt();
+
+  ////////////////////////////////////////
+  // --- Print output in terminal ------
+  ////////////////////////////////////////
+
+  function printOutput(text) {
+    if(text === '') return; // don't print empty lines (for clear)
+    // Support HTML in outputs for styling:
+    let div = document.createElement('div');
+    div.className = 'terminal-output';
+    // If text contains <span class="dir"> or other tags, set as innerHTML
+    if (text.indexOf('<span') >= 0 || text.indexOf('\n') >= 0) {
+      div.innerHTML = text.split('\n').map(line => line.trim() === '' ? '<br>' : line).join('<br>');
+    } else {
+      div.textContent = text;
+    }
+    terminal.appendChild(div);
+    scrollTerminalBottom();
+
+    // Save new output in localStorage too
+    saveState();
+  }
+
+  ////////////////////////////////////////
+  // --- Process input commands -------
+  ////////////////////////////////////////
+
+  function processCommand(line) {
+    if (!line) return;
+
+    printOutput(`${prompt.textContent.trim()} ${line}`);
+
+    history.push(line);
+    historyIndex = history.length;
+    saveState();
+
+    // Apply aliases substitution: replace first word if alias exists
+    let parts = line.trim().split(/\s+/);
+    let cmdName = parts[0];
+    if (aliases.hasOwnProperty(cmdName)) {
+      const aliased = aliases[cmdName];
+      const aliasedParts = aliased.split(/\s+/);
+      parts.shift();
+      parts = [...aliasedParts, ...parts];
+      cmdName = parts[0];
+    }
+
+    if (commandList.hasOwnProperty(cmdName)) {
+      const args = parts.slice(1);
+      try {
+        let result = commandList[cmdName].exec(args);
+        if (result) printOutput(result);
+      } catch (e) {
+        printOutput(`Error executing command: ${e.message}`);
+      }
+    } else {
+      printOutput(`bash: ${cmdName}: command not found`);
+    }
+  }
+
+  //////////////////////////////////////
+  // --- Autocomplete Implementation --
+  //////////////////////////////////////
+
+  function autocomplete() {
+    const input = cmdline.value;
+    const caretPos = cmdline.selectionStart;
+    const left = input.slice(0, caretPos);
+    const tokens = left.split(/\s+/);
+    const tokenCount = tokens.length;
+
+    // For first token, autocomplete commands and aliases
+    if (tokenCount === 1) {
+      const candidates = [...allCommandNames, ...Object.keys(aliases)];
+      let possible = candidates.filter(c => c.startsWith(tokens[0]));
+      if (possible.length === 1) {
+        cmdline.value = possible[0] + ' ';
+        cmdline.selectionStart = cmdline.selectionEnd = cmdline.value.length;
+      } else if (possible.length > 1) {
+        printOutput(possible.join('   '));
+      }
+    } else {
+      // Autocomplete filenames/folders for subsequent tokens
+      // Get current token being typed
+      const lastTokenIndex = tokens.length - 1;
+      let partial = tokens[lastTokenIndex];
+      // Determine directory path to list
+      let pathToComplete = '';
+      if (partial.indexOf('/') >= 0) {
+        pathToComplete = partial.slice(0, partial.lastIndexOf('/'));
+        partial = partial.slice(partial.lastIndexOf('/') + 1);
+      }
+      const dirPath = resolvePathInput(pathToComplete);
+      let node = resolvePath(dirPath);
+      if (!node || !isDirectory(node)) return;
+      const candidates = Object.keys(node).filter(n => n.startsWith(partial));
+      if (candidates.length === 1) {
+        // Replace last token with completed name + space
+        tokens[lastTokenIndex] = (pathToComplete ? pathToComplete + '/' : '') + candidates[0] + (isDirectory(node[candidates[0]]) ? '/' : ' ');
+        const newVal = tokens.join(' ');
+        cmdline.value = newVal;
+        cmdline.selectionStart = cmdline.selectionEnd = cmdline.value.length;
+      } else if (candidates.length > 1) {
+        printOutput(candidates.join('   '));
+      }
+    }
+  }
+
+  //////////////////////////////
+  // --- Event Listeners -------
+  //////////////////////////////
+
+  cmdline.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const input = cmdline.value.trim();
+      if (input.length === 0) return;
+      processCommand(input);
+      cmdline.value = '';
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (history.length === 0) return;
+      if (historyIndex > 0) historyIndex--;
+      cmdline.value = history[historyIndex] || '';
+      setTimeout(() => cmdline.selectionStart = cmdline.selectionEnd = cmdline.value.length, 0);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (history.length === 0) return;
+      if (historyIndex < history.length -1) historyIndex++;
+      else {
+        historyIndex = history.length;
+        cmdline.value = '';
+        return;
+      }
+      cmdline.value = history[historyIndex] || '';
+      setTimeout(() => cmdline.selectionStart = cmdline.selectionEnd = cmdline.value.length, 0);
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      autocomplete();
+    }
+  });
+
+  // Focus input on click anywhere on terminal window
+  document.body.addEventListener('click', () => cmdline.focus());
+
+})();
+</script>
+
+</body>
+</html>
